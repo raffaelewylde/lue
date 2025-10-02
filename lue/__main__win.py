@@ -26,6 +26,36 @@ from .reader import Lue
 from . import config, progress_manager
 from .tts_manager import TTSManager, get_default_tts_model_name
 
+def get_guide_file_path():
+    """Get the path to the guide file, creating a temporary file if needed for packaged installs."""
+    import tempfile
+    
+    try:
+        # Try to get the guide from the package data first (for pip installs)
+        try:
+            guide_file = files('lue') / 'guide.txt'
+            guide_content = guide_file.read_text(encoding='utf-8')
+            
+            # Create a temporary file with a user-friendly name
+            temp_dir = tempfile.gettempdir()
+            temp_path = os.path.join(temp_dir, "Lue Navigation Guide.txt")
+            
+            with open(temp_path, 'w', encoding='utf-8') as temp_file:
+                temp_file.write(guide_content)
+            
+            return temp_path
+            
+        except (FileNotFoundError, ModuleNotFoundError):
+            # Fallback to local file (for development)
+            guide_path = os.path.join(os.path.dirname(__file__), 'guide.txt')
+            if os.path.exists(guide_path):
+                return guide_path
+            else:
+                return None
+                
+    except Exception:
+        return None
+
 def setup_logging():
     """Set up file-based logging for the application."""
     log_dir = platformdirs.user_log_dir(appname="lue", appauthor=False)
@@ -50,7 +80,48 @@ def setup_environment():
     if platform.system() == "Darwin" and platform.processor() == "arm":
         os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
+def preprocess_filter_args(args):
+    """Preprocess arguments to handle --filter with space-separated values."""
+    processed_args = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ['--filter', '-f']:
+            # Found filter argument
+            processed_args.append(arg)
+            i += 1
+            
+            # Collect numeric values that follow
+            filter_values = []
+            while i < len(args):
+                try:
+                    # Try to parse as float
+                    float(args[i])
+                    filter_values.append(args[i])
+                    i += 1
+                    if len(filter_values) >= 2:  # Max 2 values
+                        break
+                except ValueError:
+                    # Not a number, stop collecting
+                    break
+            
+            # Join the values and add as a single argument
+            if filter_values:
+                processed_args.append(' '.join(filter_values))
+            else:
+                # No values provided, add empty string
+                processed_args.append('')
+        else:
+            processed_args.append(arg)
+            i += 1
+    
+    return processed_args
+
+
 async def main():
+    # Preprocess arguments to handle filter syntax
+    preprocessed_args = preprocess_filter_args(sys.argv[1:])
+    
     tts_manager = TTSManager()
     available_tts = tts_manager.get_available_tts_names()
     default_tts = get_default_tts_model_name(available_tts)
@@ -66,11 +137,18 @@ async def main():
         help='Show this help message and exit'
     )
     
+    parser.add_argument(
+        '-g', '--guide',
+        action='store_true',
+        help='Open the keyboard shortcuts navigation guide'
+    )
+
     parser.add_argument("file_path", nargs='?', help="Path to the eBook file (.epub, .pdf, .txt, etc.). If not provided, opens the last book you were reading.")
     parser.add_argument(
         "-f",
         "--filter",
-        action="store_true",
+        nargs='?',
+        const='',
         help="Enable PDF text cleaning filters",
     )
     
@@ -105,13 +183,22 @@ async def main():
             "--lang",
             help="Specify the language for the TTS model",
         )
-    args = parser.parse_args()
+    args = parser.parse_args(preprocessed_args)
 
     # Initialize console early for printing messages
     console = Console()
 
+        # Handle guide argument - open guide file in Lue app
+    if args.guide:
+        guide_path = get_guide_file_path()
+        if guide_path:
+            console.print("[green]Opening navigation guide...[/green]")
+            args.file_path = guide_path
+        else:
+            console.print("[red]Guide file not found.[/red]")
+            sys.exit(1)
     # Handle the case when no file is provided - try to open the last book
-    if not args.file_path:
+    elif not args.file_path:
         last_book_path = progress_manager.find_most_recent_book()
         if last_book_path:
             console.print(f"[green]Opening last book: {os.path.basename(last_book_path)}[/green]")
@@ -128,8 +215,32 @@ async def main():
     if args.over is not None:
         config.OVERLAP_SECONDS = args.over
 
-    if args.filter:
+    if args.filter is not None:
         config.PDF_FILTERS_ENABLED = True
+
+        if args.filter == '':
+            # Just --filter with no values, use defaults
+            pass
+        else:
+            # Parse the filter values
+            try:
+                filter_values = [float(x.strip()) for x in args.filter.split() if x.strip()]
+                
+                if len(filter_values) == 1:
+                    # One number provided - set both margins to this value
+                    config.PDF_HEADER_MARGIN = filter_values[0]
+                    config.PDF_FOOTNOTE_MARGIN = filter_values[0]
+                elif len(filter_values) == 2:
+                    # Two numbers provided - set header and footnote margins separately
+                    config.PDF_HEADER_MARGIN = filter_values[0]
+                    config.PDF_FOOTNOTE_MARGIN = filter_values[1]
+                elif len(filter_values) > 2:
+                    console.print("[red]Error: --filter accepts at most 2 values (header margin, footnote margin)[/red]")
+                    sys.exit(1)
+            except ValueError:
+                console.print(f"[red]Error: Invalid filter values '{args.filter}'. Expected float numbers.[/red]")
+                sys.exit(1)
+
 
     setup_environment()
     setup_logging()
@@ -168,7 +279,12 @@ async def main():
         # Unix/Linux terminal setup
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
-        tty.setcbreak(sys.stdin.fileno())
+        temp_guide_file = None
+    
+        # Check if we're using a temporary guide file
+        if args.guide and args.file_path and "Lue Navigation Guide.txt" in args.file_path:
+            temp_guide_file = args.file_path
+            tty.setcbreak(sys.stdin.fileno())
     
     try:
         initialized = await reader.initialize_tts()
@@ -184,6 +300,13 @@ async def main():
         # Restore terminal settings on Unix systems
         if platform.system() != "Windows" and fd is not None and old_settings is not None:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+        # Clean up temporary guide file if it was created
+        if temp_guide_file:
+            try:
+                os.unlink(temp_guide_file)
+            except (OSError, FileNotFoundError):
+                pass
 
 def cli():
     """Synchronous entry point for the command-line interface."""
