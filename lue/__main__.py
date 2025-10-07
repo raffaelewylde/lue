@@ -2,14 +2,18 @@
 
 import asyncio
 import sys
-import termios
-import tty
 import subprocess
 import argparse
 import os
 import platform
 import platformdirs
 import logging
+# Platform-specific imports for terminal control
+if platform.system() == "Windows":
+    import msvcrt
+else:
+    import termios
+    import tty
 try:
     from importlib.resources import files
 except ImportError:
@@ -263,17 +267,22 @@ async def main():
     sys.stdout.write('\033[?1000h\033[?1006h\033[?25l')
     sys.stdout.flush()
     
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    temp_guide_file = None
+    # Platform-specific terminal setup
+    if platform.system() == "Windows":
+        # Windows doesn't need special terminal setup for character input
+        old_settings = None
+        fd = None
+    else:
+        # Unix/Linux terminal setup
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        tty.setcbreak(sys.stdin.fileno())
     
     # Check if we're using a temporary guide file
     if args.guide and args.file_path and "Lue Navigation Guide.txt" in args.file_path:
         temp_guide_file = args.file_path
-    
-    try:
-        tty.setcbreak(sys.stdin.fileno())
         
+    try:
         initialized = await reader.initialize_tts()
         if not initialized and hasattr(args, 'tts') and args.tts and args.tts != "none":
             console.print(f"[bold yellow]Warning: TTS model '{args.tts}' "
@@ -284,9 +293,10 @@ async def main():
     finally:
         sys.stdout.write('\033[?1000l\033[?1006l\033[?25h')
         sys.stdout.flush()
-        if fd is not None and old_settings is not None:
+        # Restore terminal settings on Unix systems
+        if platform.system() != "Windows" and fd is not None and old_settings is not None:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-        
+
         # Clean up temporary guide file if it was created
         if temp_guide_file:
             try:
