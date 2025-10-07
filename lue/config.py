@@ -38,12 +38,14 @@ SHOW_ERRORS_ON_EXIT = True
 
 # PDF parsing settings
 PDF_FILTERS_ENABLED = False  # You can also enable this with the --filter or -f command-line option
-PDF_FILTER_HEADERS = True  # Filter headers in top margin of pages
+PDF_FILTER_HEADERS_BY_POSITION = True  # Filter headers in top margin of pages
+PDF_FILTER_HEADERS_BY_REPETITION = True
 PDF_FILTER_FOOTNOTES = True  # Filter page numbers and footnotes in bottom margin of pages
 
 # PDF filtering thresholds (only used when respective filters are enabled)
 PDF_HEADER_MARGIN = 0.1  # Top 10% of page considered header area
 PDF_FOOTNOTE_MARGIN = 0.1  # Bottom 10% of page considered footnote area
+PDF_HEADER_REPETITION_THRESHOLD = 0.8  # Text must appear on 80% of pages to be considered repeated header
 
 # UI settings
 SMOOTH_SCROLLING_ENABLED = True  # Enable smooth scrolling for keyboard navigation
