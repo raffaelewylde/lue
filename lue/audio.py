@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import logging
+import platform
 from . import config, content_parser
 
 # This pattern is used to both clean text for TTS and detect sentence fragments.
@@ -63,10 +64,21 @@ async def stop_and_clear_audio(reader):
                     await asyncio.wait_for(process.wait(), timeout=0.1)
         except (ProcessLookupError, AttributeError, asyncio.TimeoutError): pass
     
-    try:
-        pkill_proc = await asyncio.create_subprocess_exec('pkill', '-9', '-f', 'ffplay.*buffer_', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        await asyncio.wait_for(pkill_proc.wait(), timeout=0.3)
-    except (FileNotFoundError, asyncio.TimeoutError): pass
+    # Platform-specific process cleanup
+    if platform.system() == "Windows":
+        try:
+            # Windows: use taskkill to kill ffplay processes
+            taskkill_proc = await asyncio.create_subprocess_exec('taskkill', '/F', '/IM', 'ffplay.exe', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            await asyncio.wait_for(taskkill_proc.wait(), timeout=0.3)
+        except (FileNotFoundError, asyncio.TimeoutError): 
+            pass
+    else:
+        try:
+            # Unix/Linux: use pkill
+            pkill_proc = await asyncio.create_subprocess_exec('pkill', '-9', '-f', 'ffplay.*buffer_', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            await asyncio.wait_for(pkill_proc.wait(), timeout=0.3)
+        except (FileNotFoundError, asyncio.TimeoutError): 
+            pass
     
     while not reader.audio_queue.empty():
         try:
@@ -256,6 +268,24 @@ async def _player_loop(reader):
                         reader._post_command_sync,
                         ('_new_sentence_started', (c, p, s, duration, timing_data))
                     )
+                    # Reset word index when starting a new sentence
+                    reader.ui_word_idx = 0
+                    # Store word timing information for this sentence
+                    sentences = content_parser.split_into_sentences(reader.chapters[c][p])
+                    current_text = sentences[s]
+                    reader.current_sentence_words = current_text.split()
+                    reader.current_sentence_duration = timing_info.get("speech_duration") or duration
+                    reader.current_word_start_time = asyncio.get_event_loop().time()
+                    
+                    # Store precise word timings and mapping from timing info
+                    word_timings = timing_info.get("word_timings", [])
+                    if word_timings:
+                        reader.current_word_timings = word_timings
+                        # Use the pre-calculated word mapping from timing info
+                        reader.current_word_mapping = timing_info.get("word_mapping")
+                    else:
+                        reader.current_word_timings = None
+                        reader.current_word_mapping = None
                 except RuntimeError:
                     reader.audio_queue.task_done()
                     break
