@@ -1,9 +1,14 @@
 import sys
-import select
 import asyncio
 import subprocess
 import json
 import os
+import platform
+# Platform-specific imports for input handling
+if platform.system() == "Windows":
+    import msvcrt
+else:
+    import select
 
 # Load keyboard shortcuts
 KEYBOARD_SHORTCUTS = {}
@@ -45,12 +50,23 @@ except Exception:
 def process_input(reader):
     """Process user input from stdin."""
     try:
-        if select.select([sys.stdin], [], [], 0)[0]:
-            data = sys.stdin.read(1)
-            
-            if not data:
+        # Platform-specific input checking
+        if platform.system() == "Windows":
+            # Windows: check if a key is available
+            if msvcrt.kbhit():
+                data = msvcrt.getch().decode('utf-8', errors='ignore')
+            else:
                 return
-            
+        else:
+            # Unix/Linux: use select
+            if select.select([sys.stdin], [], [], 0)[0]:
+                data = sys.stdin.read(1)
+            else:
+                return
+        
+        if not data:
+            return
+
             if data == '\x1b':
                 reader.mouse_sequence_buffer = data
                 reader.mouse_sequence_active = True
@@ -189,8 +205,18 @@ def _kill_audio_immediately(reader):
             process.kill()
         except (ProcessLookupError, AttributeError):
             pass
-    try:
-        subprocess.run(['pkill', '-f', 'ffplay'], check=False, 
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
+    # Platform-specific process cleanup
+    if platform.system() == "Windows":
+        try:
+            # Windows: use taskkill to kill ffplay processes
+            subprocess.run(['taskkill', '/F', '/IM', 'ffplay.exe'], check=False, 
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    else:
+        try:
+            # Unix/Linux: use pkill
+            subprocess.run(['pkill', '-f', 'ffplay'], check=False, 
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
